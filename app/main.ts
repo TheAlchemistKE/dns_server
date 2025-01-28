@@ -1,7 +1,7 @@
 import * as dgram from "dgram";
-import { DNSQuestion } from './dnsQuestion';
-import { DNSAnswer } from './dnsAnswer';
-import { DNSMessageHeader } from "./dnsMessage";
+import { DNSMessageHeader } from './dnsMessage';
+import { DNSAnswer } from "./dnsAnswer";
+import { DNSQuestion } from "./dnsQuestion";
 
 const udpSocket: dgram.Socket = dgram.createSocket("udp4");
 udpSocket.bind(2053, "127.0.0.1");
@@ -12,6 +12,9 @@ udpSocket.on('message', (data: Buffer, remoteAddr: dgram.RemoteInfo) => {
         
         // Parse the request header
         const requestHeader = DNSMessageHeader.fromBuffer(data);
+        
+        // Parse the question section (starts at byte 12)
+        const [question, _] = DNSQuestion.fromBuffer(data, 12);
         
         // Create response header
         const responseHeader = new DNSMessageHeader();
@@ -28,9 +31,8 @@ udpSocket.on('message', (data: Buffer, remoteAddr: dgram.RemoteInfo) => {
         responseHeader.authorityRecordCount = 0;
         responseHeader.additionalRecordCount = 0;
         
-        // Create question and answer sections
-        const question = new DNSQuestion();
-        const answer = new DNSAnswer();
+        // Create answer using the parsed question name
+        const answer = new DNSAnswer(question.name);
         
         // Combine all sections
         const response = Buffer.concat([
