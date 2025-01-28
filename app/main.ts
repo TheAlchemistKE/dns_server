@@ -49,6 +49,36 @@ class DNSForwarder {
                 const header = DNSMessageHeader.fromBuffer(clientQuery);
                 const [questions, _] = this.parseQuestions(clientQuery, 12, header.questionCount);
                 
+                // Create response header first
+                const responseHeader = new DNSMessageHeader();
+                responseHeader.packetID = header.packetID;
+                responseHeader.isResponse = true;
+                responseHeader.opCode = header.opCode;
+                responseHeader.isAuthoritativeAnswer = false;
+                responseHeader.isTruncated = false;
+                responseHeader.isRecursionDesired = header.isRecursionDesired;
+                responseHeader.isRecursionAvailable = true;
+                
+                // Set RCODE based on OPCODE
+                responseHeader.responseCode = header.opCode === 0 ? 0 : 4;
+
+                // If OPCODE isn't 0, send response with RCODE 4 and no answers
+                if (header.opCode !== 0) {
+                    responseHeader.questionCount = questions.length;
+                    responseHeader.answerRecordCount = 0;
+                    responseHeader.authorityRecordCount = 0;
+                    responseHeader.additionalRecordCount = 0;
+
+                    const response = Buffer.concat([
+                        Buffer.from(responseHeader.encode()),
+                        ...questions.map(q => Buffer.from(q.encode()))
+                    ]);
+
+                    this.serverSocket.send(response, rinfo.port, rinfo.address);
+                    return;
+                }
+
+                // For standard queries (OPCODE 0), proceed with forwarding
                 const answers: DNSAnswer[] = [];
 
                 // Forward each question separately
@@ -77,16 +107,7 @@ class DNSForwarder {
                     }
                 }
 
-                // Create response packet
-                const responseHeader = new DNSMessageHeader();
-                responseHeader.packetID = header.packetID;
-                responseHeader.isResponse = true;
-                responseHeader.opCode = header.opCode;
-                responseHeader.isAuthoritativeAnswer = false;
-                responseHeader.isTruncated = false;
-                responseHeader.isRecursionDesired = header.isRecursionDesired;
-                responseHeader.isRecursionAvailable = true;
-                responseHeader.responseCode = 0;
+                // Update counts for response
                 responseHeader.questionCount = questions.length;
                 responseHeader.answerRecordCount = answers.length;
                 responseHeader.authorityRecordCount = 0;
