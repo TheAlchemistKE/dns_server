@@ -1,5 +1,5 @@
 import * as dgram from "dgram";
-import { DNSMessageHeader, DNSQuestion } from "./dnsMessage";
+import { DNSMessageHeader, DNSQuestion } from './dnsMessage';
 
 const defaultHeader = new DNSMessageHeader();
 defaultHeader.packetID = 1234;

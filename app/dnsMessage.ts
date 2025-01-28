@@ -57,43 +57,35 @@ export class DNSMessageHeader {
   }
 
   export class DNSQuestion {
-    name: string;
+    encodedName: Uint8Array;
     type: number;
     class: number;
 
-    constructor(name: string = "codecrafters.io", type: number = 1, qclass: number = 1) {
-        this.name = name;
-        this.type = type;
-        this.class = qclass;
+    constructor() {
+        // Encode "codecrafters.io" as specified: \x0ccodecrafters\x02io\x00
+        this.encodedName = new Uint8Array([
+            0x0c, ...Array.from("codecrafters").map(c => c.charCodeAt(0)),
+            0x02, ...Array.from("io").map(c => c.charCodeAt(0)),
+            0x00
+        ]);
+        this.type = 1;  // A record
+        this.class = 1; // IN class
     }
 
     encode(): Uint8Array {
-        // Convert domain name to labels
-        const labels = this.name.split('.');
-        let nameLength = labels.reduce((acc, label) => acc + label.length + 1, 1); // +1 for length byte, +1 for null terminator
+        const bytes = new Uint8Array(this.encodedName.length + 4); // name + 2 bytes type + 2 bytes class
         
-        const bytes = new Uint8Array(nameLength + 4); // +4 for type and class
-        let offset = 0;
+        // Copy the encoded name
+        bytes.set(this.encodedName, 0);
+        let offset = this.encodedName.length;
 
-        // Encode name as sequence of labels
-        for (const label of labels) {
-            bytes[offset] = label.length;
-            offset++;
-            for (let i = 0; i < label.length; i++) {
-                bytes[offset + i] = label.charCodeAt(i);
-            }
-            offset += label.length;
-        }
-        bytes[offset] = 0; // null terminator
-        offset++;
+        // Type (2 bytes, big-endian)
+        bytes[offset] = 0x00;
+        bytes[offset + 1] = 0x01;
 
-        // Encode type (2 bytes)
-        bytes[offset] = (this.type >> 8) & 0xff;
-        bytes[offset + 1] = this.type & 0xff;
-
-        // Encode class (2 bytes)
-        bytes[offset + 2] = (this.class >> 8) & 0xff;
-        bytes[offset + 3] = this.class & 0xff;
+        // Class (2 bytes, big-endian)
+        bytes[offset + 2] = 0x00;
+        bytes[offset + 3] = 0x01;
 
         return bytes;
     }
