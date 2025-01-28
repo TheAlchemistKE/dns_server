@@ -1,16 +1,7 @@
 import * as dgram from "dgram";
-import { DNSMessageHeader } from './dnsMessage';
 import { DNSQuestion } from './dnsQuestion';
-import { DNSAnswer } from "./dnsAnswer";
-
-const defaultHeader = new DNSMessageHeader();
-defaultHeader.packetID = 1234;
-defaultHeader.isResponse = true;
-defaultHeader.questionCount = 1;
-defaultHeader.answerRecordCount = 1; // Set ANCOUNT to 1
-
-const defaultQuestion = new DNSQuestion();
-const defaultAnswer = new DNSAnswer();
+import { DNSAnswer } from './dnsAnswer';
+import { DNSMessageHeader } from "./dnsMessage";
 
 const udpSocket: dgram.Socket = dgram.createSocket("udp4");
 udpSocket.bind(2053, "127.0.0.1");
@@ -19,15 +10,33 @@ udpSocket.on('message', (data: Buffer, remoteAddr: dgram.RemoteInfo) => {
     try {
         console.log(`Received data from ${remoteAddr.address}:${remoteAddr.port}`);
         
-        // Combine header, question, and answer sections
-        const headerBytes = defaultHeader.encode();
-        const questionBytes = defaultQuestion.encode();
-        const answerBytes = defaultAnswer.encode();
+        // Parse the request header
+        const requestHeader = DNSMessageHeader.fromBuffer(data);
         
+        // Create response header
+        const responseHeader = new DNSMessageHeader();
+        responseHeader.packetID = requestHeader.packetID;
+        responseHeader.isResponse = true;
+        responseHeader.opCode = requestHeader.opCode;
+        responseHeader.isAuthoritativeAnswer = false;
+        responseHeader.isTruncated = false;
+        responseHeader.isRecursionDesired = requestHeader.isRecursionDesired;
+        responseHeader.isRecursionAvailable = false;
+        responseHeader.responseCode = requestHeader.opCode === 0 ? 0 : 4;
+        responseHeader.questionCount = 1;
+        responseHeader.answerRecordCount = 1;
+        responseHeader.authorityRecordCount = 0;
+        responseHeader.additionalRecordCount = 0;
+        
+        // Create question and answer sections
+        const question = new DNSQuestion();
+        const answer = new DNSAnswer();
+        
+        // Combine all sections
         const response = Buffer.concat([
-            Buffer.from(headerBytes),
-            Buffer.from(questionBytes),
-            Buffer.from(answerBytes)
+            Buffer.from(responseHeader.encode()),
+            Buffer.from(question.encode()),
+            Buffer.from(answer.encode())
         ]);
         
         udpSocket.send(response, remoteAddr.port, remoteAddr.address);
