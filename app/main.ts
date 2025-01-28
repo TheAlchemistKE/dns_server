@@ -45,7 +45,7 @@ class DNSForwarder {
                 if (!queryInfo) return;
 
                 // Add this answer to the collection
-                queryInfo.answers.push(answer);
+                queryInfo.answers.push(answer[0]);
                 queryInfo.remainingQueries--;
 
                 // If we've received all answers, send combined response to client
