@@ -3,16 +3,28 @@ export class DNSQuestion {
     type: number;
     class: number;
 
-    static fromBuffer(buffer: Buffer, offset: number): [DNSQuestion, number] {
-        const question = new DNSQuestion();
+    static parseDomainName(buffer: Buffer, offset: number): [Uint8Array, number] {
         const labels: number[] = [];
         let currentOffset = offset;
-
-        // Parse domain name labels
+        
         while (true) {
             const length = buffer[currentOffset];
+            
+            // Check if this is a pointer (first two bits are 1)
+            if ((length & 0xc0) === 0xc0) {
+                // Extract pointer (14 bits)
+                const pointer = ((length & 0x3f) << 8) | buffer[currentOffset + 1];
+                
+                // If this is a pointer, get remaining labels from the pointed location
+                const [remainingLabels, _] = this.parseDomainName(buffer, pointer);
+                labels.push(...remainingLabels);
+                currentOffset += 2; // Move past the pointer (2 bytes)
+                break;
+            }
+            
+            // Regular label
             if (length === 0) {
-                labels.push(0); // Add null terminator
+                labels.push(0); // null terminator
                 currentOffset++;
                 break;
             }
@@ -24,15 +36,22 @@ export class DNSQuestion {
             }
             currentOffset += length + 1;
         }
+        
+        return [new Uint8Array(labels), currentOffset];
+    }
 
-        question.name = new Uint8Array(labels);
+    static fromBuffer(buffer: Buffer, offset: number): [DNSQuestion, number] {
+        const question = new DNSQuestion();
+        
+        // Parse domain name with compression support
+        const [name, newOffset] = this.parseDomainName(buffer, offset);
+        question.name = name;
         
         // Parse type and class
-        question.type = (buffer[currentOffset] << 8) | buffer[currentOffset + 1];
-        question.class = (buffer[currentOffset + 2] << 8) | buffer[currentOffset + 3];
-        currentOffset += 4;
-
-        return [question, currentOffset];
+        question.type = (buffer[newOffset] << 8) | buffer[newOffset + 1];
+        question.class = (buffer[newOffset + 2] << 8) | buffer[newOffset + 3];
+        
+        return [question, newOffset + 4];
     }
 
     encode(): Uint8Array {

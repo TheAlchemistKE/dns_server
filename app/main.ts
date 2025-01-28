@@ -13,8 +13,14 @@ udpSocket.on('message', (data: Buffer, remoteAddr: dgram.RemoteInfo) => {
         // Parse the request header
         const requestHeader = DNSMessageHeader.fromBuffer(data);
         
-        // Parse the question section (starts at byte 12)
-        const [question, _] = DNSQuestion.fromBuffer(data, 12);
+        // Parse all questions
+        let currentOffset = 12; // Start after header
+        const questions: DNSQuestion[] = [];
+        for (let i = 0; i < requestHeader.questionCount; i++) {
+            const [question, newOffset] = DNSQuestion.fromBuffer(data, currentOffset);
+            questions.push(question);
+            currentOffset = newOffset;
+        }
         
         // Create response header
         const responseHeader = new DNSMessageHeader();
@@ -26,19 +32,19 @@ udpSocket.on('message', (data: Buffer, remoteAddr: dgram.RemoteInfo) => {
         responseHeader.isRecursionDesired = requestHeader.isRecursionDesired;
         responseHeader.isRecursionAvailable = false;
         responseHeader.responseCode = requestHeader.opCode === 0 ? 0 : 4;
-        responseHeader.questionCount = 1;
-        responseHeader.answerRecordCount = 1;
+        responseHeader.questionCount = questions.length;
+        responseHeader.answerRecordCount = questions.length;
         responseHeader.authorityRecordCount = 0;
         responseHeader.additionalRecordCount = 0;
         
-        // Create answer using the parsed question name
-        const answer = new DNSAnswer(question.name);
+        // Create answer sections
+        const answers = questions.map(q => new DNSAnswer(q.name));
         
         // Combine all sections
         const response = Buffer.concat([
             Buffer.from(responseHeader.encode()),
-            Buffer.from(question.encode()),
-            Buffer.from(answer.encode())
+            ...questions.map(q => Buffer.from(q.encode())),
+            ...answers.map(a => Buffer.from(a.encode()))
         ]);
         
         udpSocket.send(response, remoteAddr.port, remoteAddr.address);
