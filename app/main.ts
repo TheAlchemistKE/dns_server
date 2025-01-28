@@ -4,116 +4,104 @@ import { DNSQuestion } from './dnsQuestion';
 import { DNSAnswer } from './dnsAnswer';
 
 class DNSForwarder {
+    private serverSocket: dgram.Socket;
     private resolverAddress: string;
     private resolverPort: number;
-    private forwarderSocket: dgram.Socket;
-    private serverSocket: dgram.Socket;
 
     constructor(resolverAddr: string) {
         const [address, port] = resolverAddr.split(':');
         this.resolverAddress = address;
         this.resolverPort = parseInt(port);
         
-        // Socket for receiving client queries
         this.serverSocket = dgram.createSocket("udp4");
-        // Socket for forwarding queries to resolver
-        this.forwarderSocket = dgram.createSocket("udp4");
-
-        this.setupForwarderSocket();
-        this.setupServerSocket();
+        this.setupServer();
     }
 
-    private setupForwarderSocket() {
-        // Map to store client info for each query ID
-        const pendingQueries = new Map<number, {
-            clientAddress: string;
-            clientPort: number;
-            remainingQueries: number;
-            originalHeader: DNSMessageHeader;
-            answers: DNSAnswer[];
-        }>();
+    private async forwardQuery(query: Buffer): Promise<Buffer> {
+        return new Promise((resolve, reject) => {
+            const forwarderSocket = dgram.createSocket("udp4");
+            
+            const timeout = setTimeout(() => {
+                forwarderSocket.close();
+                reject(new Error('Resolver timeout'));
+            }, 5000);
 
-        this.forwarderSocket.on('message', (response: Buffer, _: dgram.RemoteInfo) => {
-            try {
-                // Parse response from resolver
-                const responseHeader = DNSMessageHeader.fromBuffer(response);
-                const [question, answerOffset] = DNSQuestion.fromBuffer(response, 12);
-                const answer = DNSAnswer.fromBuffer(response, answerOffset);
+            forwarderSocket.on('error', (err) => {
+                clearTimeout(timeout);
+                forwarderSocket.close();
+                reject(err);
+            });
 
-                // Get original client info
-                const queryInfo = pendingQueries.get(responseHeader.packetID);
-                if (!queryInfo) return;
+            forwarderSocket.on('message', (response: Buffer) => {
+                clearTimeout(timeout);
+                forwarderSocket.close();
+                resolve(response);
+            });
 
-                // Add this answer to the collection
-                queryInfo.answers.push(answer[0]);
-                queryInfo.remainingQueries--;
-
-                // If we've received all answers, send combined response to client
-                if (queryInfo.remainingQueries === 0) {
-                    const finalHeader = queryInfo.originalHeader;
-                    finalHeader.answerRecordCount = queryInfo.answers.length;
-
-                    const [questions, _] = this.parseQuestions(response, 12, finalHeader.questionCount);
-                    
-                    // Combine all sections
-                    const finalResponse = Buffer.concat([
-                        Buffer.from(finalHeader.encode()),
-                        ...questions.map(q => Buffer.from(q.encode())),
-                        ...queryInfo.answers.map(a => Buffer.from(a.encode()))
-                    ]);
-
-                    this.serverSocket.send(
-                        finalResponse,
-                        queryInfo.clientPort,
-                        queryInfo.clientAddress
-                    );
-
-                    pendingQueries.delete(responseHeader.packetID);
-                }
-            } catch (error) {
-                console.error('Error processing resolver response:', error);
-            }
+            forwarderSocket.send(query, this.resolverPort, this.resolverAddress);
         });
     }
 
-    private setupServerSocket() {
-        this.serverSocket.on('message', async (query: Buffer, rinfo: dgram.RemoteInfo) => {
+    private setupServer() {
+        this.serverSocket.on('message', async (clientQuery: Buffer, rinfo: dgram.RemoteInfo) => {
             try {
-                const header = DNSMessageHeader.fromBuffer(query);
-                const [questions, _] = this.parseQuestions(query, 12, header.questionCount);
-
-                // Store client info for response handling
-                const queryInfo = {
-                    clientAddress: rinfo.address,
-                    clientPort: rinfo.port,
-                    remainingQueries: questions.length,
-                    originalHeader: header,
-                    answers: [] as DNSAnswer[]
-                };
+                // Parse original query
+                const header = DNSMessageHeader.fromBuffer(clientQuery);
+                const [questions, _] = this.parseQuestions(clientQuery, 12, header.questionCount);
+                
+                const answers: DNSAnswer[] = [];
 
                 // Forward each question separately
-                for (let i = 0; i < questions.length; i++) {
-                    const singleQuestionHeader = new DNSMessageHeader();
-                    singleQuestionHeader.packetID = header.packetID;
-                    singleQuestionHeader.questionCount = 1;
-                    singleQuestionHeader.isRecursionDesired = header.isRecursionDesired;
+                for (const question of questions) {
+                    // Create new query packet for single question
+                    const singleHeader = new DNSMessageHeader();
+                    singleHeader.packetID = header.packetID;
+                    singleHeader.questionCount = 1;
+                    singleHeader.isRecursionDesired = header.isRecursionDesired;
 
-                    const forwardQuery = Buffer.concat([
-                        Buffer.from(singleQuestionHeader.encode()),
-                        Buffer.from(questions[i].encode())
+                    const queryPacket = Buffer.concat([
+                        Buffer.from(singleHeader.encode()),
+                        Buffer.from(question.encode())
                     ]);
 
-                    this.forwarderSocket.send(
-                        forwardQuery,
-                        this.resolverPort,
-                        this.resolverAddress
-                    );
+                    try {
+                        // Forward and wait for response
+                        const response = await this.forwardQuery(queryPacket);
+                        
+                        // Parse response and extract answer
+                        const [_, answerOffset] = DNSQuestion.fromBuffer(response, 12);
+                        const [answer, __] = DNSAnswer.fromBuffer(response, answerOffset);
+                        answers.push(answer);
+                    } catch (error) {
+                        console.error('Error forwarding query:', error);
+                    }
                 }
 
-                // Store query info for handling responses
-                this.pendingQueries.set(header.packetID, queryInfo);
+                // Create response packet
+                const responseHeader = new DNSMessageHeader();
+                responseHeader.packetID = header.packetID;
+                responseHeader.isResponse = true;
+                responseHeader.opCode = header.opCode;
+                responseHeader.isAuthoritativeAnswer = false;
+                responseHeader.isTruncated = false;
+                responseHeader.isRecursionDesired = header.isRecursionDesired;
+                responseHeader.isRecursionAvailable = true;
+                responseHeader.responseCode = 0;
+                responseHeader.questionCount = questions.length;
+                responseHeader.answerRecordCount = answers.length;
+                responseHeader.authorityRecordCount = 0;
+                responseHeader.additionalRecordCount = 0;
+
+                // Combine all sections
+                const response = Buffer.concat([
+                    Buffer.from(responseHeader.encode()),
+                    ...questions.map(q => Buffer.from(q.encode())),
+                    ...answers.map(a => Buffer.from(a.encode()))
+                ]);
+
+                this.serverSocket.send(response, rinfo.port, rinfo.address);
             } catch (error) {
-                console.error('Error processing client query:', error);
+                console.error('Error processing query:', error);
             }
         });
 
@@ -132,14 +120,6 @@ class DNSForwarder {
 
         return [questions, currentOffset];
     }
-
-    private pendingQueries = new Map<number, {
-        clientAddress: string;
-        clientPort: number;
-        remainingQueries: number;
-        originalHeader: DNSMessageHeader;
-        answers: DNSAnswer[];
-    }>();
 }
 
 // Parse command line arguments
